@@ -46,7 +46,6 @@ export const useSpeechRecognition = ({
       console.error('Failed to save transcript to file:', error);
     }
   }, [sessionId, dispatch, saveInterimResults]);
-
   const startListening = useCallback(() => {
     if (!state.isMicActive) return;
 
@@ -118,7 +117,7 @@ export const useSpeechRecognition = ({
     } catch (error) {
       console.error('Error starting speech recognition:', error);
     }
-  }, [dispatch, onTranscriptUpdate, saveTranscript, state.isMicActive, transcript]);
+  }, [dispatch, onTranscriptUpdate, saveTranscript, state.isMicActive]);
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {

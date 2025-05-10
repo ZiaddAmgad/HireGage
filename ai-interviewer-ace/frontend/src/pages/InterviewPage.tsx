@@ -1,230 +1,303 @@
-import React, { useEffect, useState,useRef } from 'react';
+// Completely rewritten InterviewPage.tsx
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInterview } from '../context/InterviewContext';
 import VideoPlayer from '../components/interview/VideoPlayer';
 import TranscriptPane from '../components/interview/TranscriptPane';
 import InterviewControls from '../components/interview/InterviewControls';
 import useSpeechRecognition from '../hooks/useSpeechRecognition';
-
-
-
-
+import * as interviewApi from '../services/interviewApi';
 
 const InterviewPage: React.FC = () => {
   const navigate = useNavigate();
   const { state, dispatch } = useInterview();
   const [isIntroducing, setIsIntroducing] = useState(true);
+  const [sessionId, setSessionId] = useState<string>('');
+  const [websocket, setWebsocket] = useState<WebSocket | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
 
-  const { startListening, stopListening, isListening } = useSpeechRecognition({
-    onTranscriptUpdate: (transcript) => {
-      // This could be used to show real-time typing effect
-      console.log('Current transcript:', transcript);
-
-      const ws = new WebSocket("ws://localhost:8000/interview/ws/1");
-
-
-
-    }
-  });
-  
-  // Simulate an interview flow with the AI
-  useEffect(() => {
-
-
-
-    const mediaSource = new MediaSource();
-    const audioEl = audioRef.current;
-    if (!audioEl) return;
-
-    audioEl.src = URL.createObjectURL(mediaSource);
-
-    const ws = new WebSocket("ws://localhost:8000/interview/ws/1");
-    mediaSource.addEventListener("sourceopen", () => {
-      const mime = "audio/webm; codecs=opus";
-      const sourceBuffer = mediaSource.addSourceBuffer(mime);
-      sourceBuffer.mode = "sequence";
-      sourceBufferRef.current = sourceBuffer;
+  // Speech recognition setup
+  const { startListening, stopListening, isListening, transcript } = useSpeechRecognition({
+    onTranscriptUpdate: (transcriptText) => {
+      // Show real-time typing effect in the UI
+      dispatch({ 
+        type: 'ADD_TO_TRANSCRIPT', 
+        payload: { 
+          speaker: 'user', 
+          text: transcriptText 
+        } 
+      });
       
-      ws.binaryType = "arraybuffer";
+      // Send transcripts to backend via websocket
+      if (websocket && websocket.readyState === WebSocket.OPEN && sessionId) {
+        // Determine if this might be a final result based on punctuation
+        const isFinalSentence = /[.!?]$/.test(transcriptText.trim());
+        
+        websocket.send(JSON.stringify({
+          text: transcriptText,
+          is_final: isFinalSentence
+        }));
+      }
+    },
+    sessionId: sessionId,
+    saveInterimResults: true
+  });
 
-      ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer && !sourceBuffer.updating) {
-          sourceBuffer.appendBuffer(new Uint8Array(event.data));
-        }
-      };
-
-      ws.onclose = () => {
-        mediaSource.endOfStream();
-      };
-    });
+  // Connect to backend and start the interview
+  useEffect(() => {
     // Check if we have job information
     if (!state.jobTitle && !state.jobDescription) {
       navigate('/');
       return;
     }
     
-    const startInterview = async () => {
+    // Setup audio handling for speech synthesis
+    const setupAudio = () => {
+      const mediaSource = new MediaSource();
+      const audioEl = audioRef.current;
+      if (!audioEl) return null;
+
+      audioEl.src = URL.createObjectURL(mediaSource);
+
+      return new Promise<MediaSource>((resolve) => {
+        mediaSource.addEventListener("sourceopen", () => {
+          const mime = "audio/webm; codecs=opus";
+          try {
+            const sourceBuffer = mediaSource.addSourceBuffer(mime);
+            sourceBuffer.mode = "sequence";
+            sourceBufferRef.current = sourceBuffer;
+            resolve(mediaSource);
+          } catch (e) {
+            console.error('Error setting up source buffer:', e);
+            resolve(mediaSource);
+          }
+        });
+      });
+    };
+    
+    // Initialize the interview with the backend
+    const initInterview = async () => {
       try {
-        // Introduction phase
+        // Indicate we're in introduction phase
         setIsIntroducing(true);
-        
-        // Simulate AI processing
+        dispatch({ type: 'START_INTERVIEW' });
         dispatch({ type: 'SET_AI_PROCESSING', payload: true });
-        await new Promise(resolve => setTimeout(resolve, 2000));
         
-        // AI introduction
-        const introduction = `Hello! I'll be your interviewer today for the ${state.jobTitle || 'position'} role. I'll ask you some questions based on the job description you provided. Let's get started with a brief introduction about yourself.`;
+        // Start the interview with our API
+        const response = await interviewApi.startInterview({
+          job_title: state.jobTitle,
+          company_name: "HireGage", // Could be configurable
+          job_description: state.jobDescription,
+          interview_duration: 15 // Minutes
+        });
         
+        // Save session ID for future API calls
+        setSessionId(response.session_id);
+        
+        // Create WebSocket connection for real-time communication
+        const ws = interviewApi.createInterviewWebSocket(response.session_id);
+        setWebsocket(ws);
+        
+        // Configure WebSocket for binary messages (audio)
+        ws.binaryType = "arraybuffer";
+        
+        // Setup audio player for AI speech
+        const mediaSource = await setupAudio();
+        
+        // Handle incoming messages from WebSocket
+        ws.onmessage = (event) => {
+          // Handle binary audio data
+          if (event.data instanceof ArrayBuffer && sourceBufferRef.current && !sourceBufferRef.current.updating) {
+            try {
+              // Append audio data to the buffer for playback
+              sourceBufferRef.current.appendBuffer(new Uint8Array(event.data));
+            } catch (e) {
+              console.error('Error appending buffer:', e);
+            }
+          } 
+          // Handle text messages (questions, instructions)
+          else if (typeof event.data === 'string') {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.text) {
+                // Add AI message to the transcript
+                dispatch({ 
+                  type: 'ADD_TO_TRANSCRIPT', 
+                  payload: { 
+                    speaker: 'ai', 
+                    text: data.text 
+                  } 
+                });
+                
+                // Set as the current active question
+                dispatch({ type: 'SET_CURRENT_QUESTION', payload: data.text });
+              }
+            } catch (e) {
+              console.error('Error processing WebSocket message:', e);
+            }
+          }
+        };
+        
+        // Handle WebSocket close
+        ws.onclose = () => {
+          console.log("WebSocket connection closed");
+          if (mediaSource && mediaSource.readyState === 'open') {
+            mediaSource.endOfStream();
+          }
+        };
+        
+        // Display the initial AI introduction message
         dispatch({ 
           type: 'ADD_TO_TRANSCRIPT', 
           payload: { 
             speaker: 'ai', 
-            text: introduction 
+            text: response.message 
           } 
         });
         
-        dispatch({ type: 'SET_CURRENT_QUESTION', payload: 'Could you please introduce yourself and tell me a bit about your background relevant to this role?' });
+        dispatch({ type: 'SET_CURRENT_QUESTION', payload: response.message });
         dispatch({ type: 'SET_AI_PROCESSING', payload: false });
         
         // End introduction phase
         setIsIntroducing(false);
         
-        // Start listening for user's response
+        // Start listening for user's speech
         startListening();
+      } catch (error) {
+        console.error('Error initializing interview:', error);
+        dispatch({ type: 'SET_AI_PROCESSING', payload: false });
         
-        // Simulate interview questions
-        const questions = [
-          'What interests you about this position?',
-          'Tell me about a challenging project you worked on recently.',
-          'How do you handle tight deadlines and pressure?',
-          'Where do you see yourself professionally in the next 3-5 years?'
-        ];
+        // Display error to user
+        alert('Failed to start interview. Please try again later.');
+      }
+    };
+    
+    // Start the interview automatically
+    initInterview();
+    
+    // Cleanup when component unmounts
+    return () => {
+      if (websocket) {
+        websocket.close();
+      }
+      stopListening();
+    };
+  }, [state.jobTitle, state.jobDescription, navigate, dispatch, startListening, stopListening]);
+  
+  // Function to handle ending the interview
+  const handleEndInterview = async () => {
+    stopListening();
+    
+    if (sessionId) {
+      try {
+        dispatch({ type: 'SET_AI_PROCESSING', payload: true });
         
-        // For demo purposes, we'll simulate an interview flow with timed questions
-        for (let i = 0; i < questions.length; i++) {
-          // Wait for "user response time" (simulated)
-          await new Promise(resolve => setTimeout(resolve, 10000 + Math.random() * 5000));
-          
-          // Stop listening for current answer
-          stopListening();
-          
-          // AI is processing
-          dispatch({ type: 'SET_AI_PROCESSING', payload: true });
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          // AI asks next question
+        // Call the API to get interview feedback and summary
+        const summary = await interviewApi.endInterview(sessionId);
+        
+        // Update the interview context with feedback
+        const feedback = {
+          overall: summary.feedback,
+          strengths: summary.evaluation ? [
+            `Technical skills: ${summary.evaluation.technical_skills}/10`,
+            `Communication: ${summary.evaluation.communication}/10`,
+            `Culture fit: ${summary.evaluation.culture_fit}/10`,
+            `Problem solving: ${summary.evaluation.problem_solving}/10`,
+          ] : [],
+          improvements: summary.summary ? summary.summary.key_points : [],
+          questionFeedback: summary.transcript ? 
+            summary.transcript
+              .filter(item => item.role === 'assistant')
+              .map(item => ({
+                question: item.content,
+                feedback: 'AI analysis of your response to be implemented'
+              })) : []
+        };
+        
+        dispatch({ type: 'SET_FEEDBACK', payload: feedback });
+        dispatch({ type: 'END_INTERVIEW' });
+        dispatch({ type: 'SET_AI_PROCESSING', payload: false });
+        
+        // Navigate to feedback page
+        navigate('/feedback');
+      } catch (error) {
+        console.error('Error ending interview:', error);
+        dispatch({ type: 'SET_AI_PROCESSING', payload: false });
+        
+        // End the interview anyway and navigate to feedback with mock data
+        const mockFeedback = {
+          overall: "Thank you for completing the interview. We're experiencing technical difficulties retrieving your detailed feedback.",
+          strengths: [
+            "Interview completed successfully",
+          ],
+          improvements: [
+            "Try again later for detailed feedback"
+          ],
+          questionFeedback: []
+        };
+        
+        dispatch({ type: 'SET_FEEDBACK', payload: mockFeedback });
+        dispatch({ type: 'END_INTERVIEW' });
+        navigate('/feedback');
+      }
+    } else {
+      // No session ID, just navigate to feedback with error message
+      const errorFeedback = {
+        overall: "Interview session could not be properly established. Please try again.",
+        strengths: [],
+        improvements: ["Check your internet connection and try again"],
+        questionFeedback: []
+      };
+      
+      dispatch({ type: 'SET_FEEDBACK', payload: errorFeedback });
+      dispatch({ type: 'END_INTERVIEW' });
+      navigate('/feedback');
+    }
+  };
+  
+  // Handle when user requests next question
+  const handleNextQuestion = async () => {
+    if (sessionId) {
+      try {
+        dispatch({ type: 'SET_AI_PROCESSING', payload: true });
+        
+        // Submit final transcript and get next question
+        const response = await interviewApi.getNextQuestion(sessionId);
+        
+        if (response.message) {
           dispatch({ 
             type: 'ADD_TO_TRANSCRIPT', 
             payload: { 
               speaker: 'ai', 
-              text: questions[i] 
+              text: response.message
             } 
           });
           
-          dispatch({ type: 'SET_CURRENT_QUESTION', payload: questions[i] });
-          dispatch({ type: 'SET_AI_PROCESSING', payload: false });
-          
-          // Start listening for next response
-          startListening();
+          dispatch({ type: 'SET_CURRENT_QUESTION', payload: response.message });
         }
         
-        // Final waiting period for the last answer
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        
-        // Stop listening for the last answer
-        stopListening();
-        
-        // AI is processing
-        dispatch({ type: 'SET_AI_PROCESSING', payload: true });
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // AI concludes the interview
-        dispatch({ 
-          type: 'ADD_TO_TRANSCRIPT', 
-          payload: { 
-            speaker: 'ai', 
-            text: 'Thank you for participating in this interview! I have all the information I need. Let me prepare your feedback...' 
-          } 
-        });
-        
-        dispatch({ type: 'SET_CURRENT_QUESTION', payload: '' });
         dispatch({ type: 'SET_AI_PROCESSING', payload: false });
-        
-        // Simulate generating feedback
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // End the interview and redirect to feedback
-        handleEndInterview();
       } catch (error) {
-        console.error('Error during interview:', error);
+        console.error('Error getting next question:', error);
+        dispatch({ type: 'SET_AI_PROCESSING', payload: false });
       }
-    };
-    
-    // Start the interview simulation
-    startInterview();
-    
-    // Cleanup when component unmounts
-    return () => {
-      stopListening();
-    };
-  }, []);
-  
-  const handleEndInterview = () => {
-    stopListening();
-    
-    // Generate mock feedback
-    const feedback = {
-      overall: "Overall, you performed well in the interview with clear communication and relevant experience. There's room for improvement in specificity and structure of some answers.",
-      strengths: [
-        "Strong articulation of technical skills and experience",
-        "Good examples of past projects and accomplishments",
-        "Professional demeanor throughout the interview",
-        "Clear interest in the position and company"
-      ],
-      improvements: [
-        "Provide more measurable outcomes and metrics in your examples",
-        "Structure answers using the STAR method for clarity",
-        "Elaborate more on how your skills directly apply to the job requirements",
-        "Prepare more concise answers to common questions"
-      ],
-      questionFeedback: [
-        {
-          question: "Could you please introduce yourself and tell me a bit about your background relevant to this role?",
-          feedback: "Good overview of relevant experience, but could be more concise. Consider focusing on 2-3 key highlights most relevant to this role."
-        },
-        {
-          question: "What interests you about this position?",
-          feedback: "Strong answer showing research about the company. Good job connecting your skills to the role requirements."
-        },
-        {
-          question: "Tell me about a challenging project you worked on recently.",
-          feedback: "Good example, but lacking specific metrics on impact. Include numbers and business outcomes to strengthen your response."
-        }
-      ]
-    };
-    
-    dispatch({ type: 'SET_FEEDBACK', payload: feedback });
-    dispatch({ type: 'END_INTERVIEW' });
-    
-    // Navigate to feedback page
-    navigate('/feedback');
+    }
   };
   
   return (
-    <div className="max-w-5xl mx-auto">
-      {/* Job information */}
+    <div className="max-w-6xl mx-auto px-4 py-6">
+      {/* Interview header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">
-          Interview Practice: {state.jobTitle || 'Job Position'}
+        <h1 className="text-3xl font-bold text-gray-900">
+          {state.jobTitle || 'Job Interview'} Interview
         </h1>
         <p className="text-gray-600 mt-1">
           Speak naturally as if in a real interview. The AI will guide the conversation.
         </p>
       </div>
       
-      {/* Interview status banner */}
+      {/* Loading indicator during introduction */}
       {isIntroducing && (
         <div className="mb-6 bg-blue-50 border-l-4 border-blue-500 p-4 rounded">
           <div className="flex">
@@ -235,45 +308,85 @@ const InterviewPage: React.FC = () => {
             </div>
             <div className="ml-3">
               <p className="text-sm text-blue-700">
-                The AI interviewer is preparing your questions based on the job information you provided. The interview will begin momentarily.
+                The AI interviewer is preparing your interview based on the job description. This will take just a moment...
               </p>
             </div>
           </div>
         </div>
       )}
       
+      {/* Processing indicator */}
+      {state.isAIProcessing && !isIntroducing && (
+        <div className="mb-6 bg-gray-50 border-l-4 border-gray-500 p-4 rounded">
+          <div className="flex items-center">
+            <div className="flex-shrink-0 mr-3">
+              <svg className="animate-spin h-5 w-5 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </div>
+            <p className="text-sm text-gray-700">
+              Processing your response...
+            </p>
+          </div>
+        </div>
+      )}
+      
       {/* Main interview area */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Video section */}
-        <div className="space-y-4">
-          <VideoPlayer />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Video preview */}
+        <div className="lg:col-span-1">
+          <div className="bg-gray-100 rounded-lg overflow-hidden">
+            <VideoPlayer />
+          </div>
           
-          {/* Microphone status */}
-          <div className={`flex items-center p-3 rounded ${isListening ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-500'}`}>
+          {/* Microphone status indicator */}
+          <div className={`mt-3 flex items-center p-3 rounded ${isListening ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-500'}`}>
             <div className={`w-3 h-3 rounded-full mr-2 ${isListening ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
-            <span>{isListening ? 'Microphone active - speak now' : 'Microphone inactive'}</span>
+            <span className="text-sm">{isListening ? 'Microphone active - speak now' : 'Microphone inactive'}</span>
           </div>
         </div>
         
-        {/* Transcript section */}
-        <div className="space-y-4">
-          <TranscriptPane />
-          
-          {/* Current question focus area */}
+        {/* Transcript and controls */}
+        <div className="lg:col-span-2 flex flex-col">
+          {/* Current question highlight */}
           {state.currentQuestion && (
-            <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-4">
               <h3 className="font-medium text-blue-800 mb-1">Current Question:</h3>
               <p className="text-gray-800">{state.currentQuestion}</p>
             </div>
           )}
+          
+          {/* Real-time transcript */}
+          <div className="flex-grow mb-4">
+            <TranscriptPane />
+          </div>
+          
+          {/* Controls */}
+          <div className="mt-auto">
+            <div className="flex justify-between items-center">
+              <button 
+                onClick={handleNextQuestion}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={state.isAIProcessing}
+              >
+                Next Question
+              </button>
+              
+              <button 
+                onClick={handleEndInterview}
+                className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500"
+              >
+                End Interview
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       
-      {/* Controls */}
-      <div className="mt-6">
-        <InterviewControls onEndInterview={handleEndInterview} />
-      </div>
-      <audio ref={audioRef} controls autoPlay />    </div>
+      {/* Hidden audio element for AI speech */}
+      <audio ref={audioRef} style={{ display: 'none' }} autoPlay />
+    </div>
   );
 };
 

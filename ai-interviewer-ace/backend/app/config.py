@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     
     # API Configuration
     API_V1_STR: str = "/api/v1"
+    API_PREFIX: str = "/api"  # Added for compatibility
+    API_VERSION: str = "v1"   # Added for compatibility
     PROJECT_NAME: str = "HireGage AI HR Interview Agent"
     DEBUG: bool = Field(default=False)
     VERSION: str = "0.1.0"
@@ -32,12 +34,11 @@ class Settings(BaseSettings):
     # Supabase Configuration
     SUPABASE_URL: str = Field(..., description="Supabase project URL")
     SUPABASE_KEY: str = Field(..., description="Supabase API key")
-    
-    # Database Configuration
+      # Database Configuration
     DATABASE_URL: Optional[PostgresDsn] = None
     
     # CORS Configuration
-    CORS_ORIGINS: List[str] = Field(default=["http://localhost:5173", "http://localhost:3000"])
+    CORS_ORIGINS: List[str] = Field(default=["http://localhost:5173", "http://localhost:3000", "http://localhost:5175"])
     
     # Interview Settings
     MAX_INTERVIEW_DURATION_MINUTES: int = Field(default=30)
