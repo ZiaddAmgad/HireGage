@@ -87,14 +87,14 @@ export const useSpeechRecognition = ({
         const currentTranscript = finalTranscript || interimTranscript;
         setTranscript(currentTranscript);
         
-        // If we have a final transcript, save it immediately
-        if (finalTranscript && finalTranscript.trim()) {
-          saveTranscript(finalTranscript, true);
-        } 
-        // If we have interim results and saving them is enabled
-        else if (saveInterimResults && interimTranscript && interimTranscript.trim()) {
-          saveTranscript(interimTranscript, false);
-        }
+        // // If we have a final transcript, save it immediately
+        // if (finalTranscript && finalTranscript.trim()) {
+        //   saveTranscript(finalTranscript, true);
+        // } 
+        // // If we have interim results and saving them is enabled
+        // else if (saveInterimResults && interimTranscript && interimTranscript.trim()) {
+        //   saveTranscript(interimTranscript, false);
+        // }
         
         if (onTranscriptUpdate) {
           onTranscriptUpdate(currentTranscript);

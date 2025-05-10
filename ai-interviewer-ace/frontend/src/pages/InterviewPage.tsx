@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState,useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInterview } from '../context/InterviewContext';
 import VideoPlayer from '../components/interview/VideoPlayer';
@@ -6,20 +6,59 @@ import TranscriptPane from '../components/interview/TranscriptPane';
 import InterviewControls from '../components/interview/InterviewControls';
 import useSpeechRecognition from '../hooks/useSpeechRecognition';
 
+
+
+
+
 const InterviewPage: React.FC = () => {
   const navigate = useNavigate();
   const { state, dispatch } = useInterview();
   const [isIntroducing, setIsIntroducing] = useState(true);
-  
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const sourceBufferRef = useRef<SourceBuffer | null>(null);
+
   const { startListening, stopListening, isListening } = useSpeechRecognition({
     onTranscriptUpdate: (transcript) => {
       // This could be used to show real-time typing effect
       console.log('Current transcript:', transcript);
+
+      const ws = new WebSocket("ws://localhost:8000/interview/ws/1");
+
+
+
     }
   });
   
   // Simulate an interview flow with the AI
   useEffect(() => {
+
+
+
+    const mediaSource = new MediaSource();
+    const audioEl = audioRef.current;
+    if (!audioEl) return;
+
+    audioEl.src = URL.createObjectURL(mediaSource);
+
+    const ws = new WebSocket("ws://localhost:8000/interview/ws/1");
+    mediaSource.addEventListener("sourceopen", () => {
+      const mime = "audio/webm; codecs=opus";
+      const sourceBuffer = mediaSource.addSourceBuffer(mime);
+      sourceBuffer.mode = "sequence";
+      sourceBufferRef.current = sourceBuffer;
+      
+      ws.binaryType = "arraybuffer";
+
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer && !sourceBuffer.updating) {
+          sourceBuffer.appendBuffer(new Uint8Array(event.data));
+        }
+      };
+
+      ws.onclose = () => {
+        mediaSource.endOfStream();
+      };
+    });
     // Check if we have job information
     if (!state.jobTitle && !state.jobDescription) {
       navigate('/');
@@ -234,7 +273,7 @@ const InterviewPage: React.FC = () => {
       <div className="mt-6">
         <InterviewControls onEndInterview={handleEndInterview} />
       </div>
-    </div>
+      <audio ref={audioRef} controls autoPlay />    </div>
   );
 };
 
