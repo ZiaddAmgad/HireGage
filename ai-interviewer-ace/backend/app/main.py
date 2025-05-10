@@ -20,8 +20,7 @@ from app.schemas.schemas import (
     InterviewResponse,
     InterviewSummary,
 )
-from app.agent_logic import InterviewAgent
-
+from app.routers.interviews import router as interview_router
 from app.routers import api_router
 from app.middleware import (
     RequestLoggingMiddleware,
@@ -231,7 +230,7 @@ if get_settings().DEBUG:
             "cors_origins": get_settings().CORS_ORIGINS,
         }
 
-
+app.include_router(interview_router)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -1,12 +1,14 @@
 """
 API router for interview endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Body,WebSocket
 from typing import Dict, Any, Optional
 import uuid
 import time
 
-from app.agent_logic import InterviewAgent
+from app.utils.tts import text_to_opus_google
+
+from app.Agent.index import stream_graph_updates
 from app.schemas import (
     JobTitleRequest, 
     InterviewResponse, 
@@ -158,3 +160,14 @@ async def end_interview(session_id: str):
         
     except Exception as e:
         raise AIServiceError(f"Failed to end interview: {str(e)}", e)
+
+@router.websocket("/ws/{session_id}")
+async def interview(websocket: WebSocket):
+    await websocket.accept()
+    user_input = ""
+    while True:
+        data = stream_graph_updates(user_input)
+        audio_response = text_to_opus_google(data)
+        await websocket.send_bytes(audio_response)
+        time.sleep(60)
+        user_input = await websocket.receive_text()

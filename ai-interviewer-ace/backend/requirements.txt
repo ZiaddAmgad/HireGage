@@ -16,7 +16,7 @@ python-jose==3.3.0
 passlib==1.7.4
 bcrypt==4.0.1
 alembic==1.12.1
-vosk==0.3.45
+vosk==0.3.44
 sounddevice==0.4.6
 websockets==12.0
-numpy==1.26.0
+numpy==1.26.3
